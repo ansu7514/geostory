@@ -22,7 +22,7 @@ export default function App() {
       }}>
         <div style={{ fontFamily: 'Syne, sans-serif', fontSize: 20, fontWeight: 700, letterSpacing: '-0.5px' }}>
           Geo<span style={{ color: 'var(--accent)' }}>Story</span>
-          <small style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 400, marginLeft: 8, letterSpacing: 0 }}>by SPH</small>
+          <small style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 400, marginLeft: 8, letterSpacing: 0 }}>by suhyun</small>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {rows.length > 0 && (
