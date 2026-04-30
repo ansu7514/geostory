@@ -1,41 +1,37 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
+import { CAT_COLORS, TILE_LAYERS, mercatorToLatLng, latLngToMercator, genId } from './constants';
 
-const LAYERS = {
-  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  street: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-  sat: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-};
-
-const CAT_COLORS = {
-  랜드마크: '#4f7cff',
-  광장: '#4ade80',
-  관광: '#fbbf24',
-  유적: '#f87171',
-  문화: '#c084fc',
-  공원: '#34d399',
-  상업: '#fb923c',
-  교통: '#60a5fa',
-  음식: '#f472b6',
-  숙박: '#a78bfa',
-  의료: '#2dd4bf',
-  교육: '#86efac',
-  default: '#8892b0',
-};
-// ── Image overlay panel ───────────────────────────────────
-function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
+// ── ImageOverlayPanel ─────────────────────────────────────
+function ImageOverlayPanel({ mapRef, resetTrigger }) {
   const [overlays, setOverlays] = useState([]);
   const [dragging, setDragging] = useState(false);
-  const [placing, setPlacing] = useState(null); // {url, name, type}
+  const [placing, setPlacing] = useState(null);
   const [loading, setLoading] = useState(null);
   const [bounds, setBounds] = useState({ n: '', s: '', e: '', w: '' });
+  const [eyedroppingId, setEyedroppingId] = useState(null);
+  const [tolerance, setTolerance] = useState(30);
   const fileRef = useRef(null);
   const layerRefs = useRef({});
+  const rasterRefs = useRef({});
 
-  // 스포이드 관련 state
-  const [eyedropper, setEyedropper] = useState(null); // { id, raster, GeoRasterLayer, bounds }
-  const [tolerance, setTolerance] = useState(30);
-  const rasterRefs = useRef({}); // id → { raster, GeoRasterLayer, sw, ne }
+  // 외부 초기화 트리거
+  useEffect(() => {
+    if (!resetTrigger || !mapRef.current) return;
+    Object.values(layerRefs.current).forEach((layer) => {
+      try {
+        mapRef.current.removeLayer(layer);
+      } catch {
+        /* ignore */
+      }
+    });
+    layerRefs.current = {};
+    rasterRefs.current = {};
+    setOverlays([]);
+    setPlacing(null);
+    setLoading(null);
+    setEyedroppingId(null);
+  }, [resetTrigger, mapRef]);
 
   const loadFile = (file) => {
     const ext = file.name.split('.').pop().toLowerCase();
@@ -43,23 +39,46 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
       loadGeoTIFF(file);
     } else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
       const url = URL.createObjectURL(file);
-      setPlacing({ url, name: file.name, type: 'image' });
+      setPlacing({ url, name: file.name });
     }
   };
 
-  // EPSG:3857 (Web Mercator) → WGS84 변환
-  const mercatorToLatLng = (x, y) => {
-    const lng = (x / 20037508.342) * 180;
-    const lat = (180 / Math.PI) * (2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2);
-    return [lat, lng];
-  };
+  const buildRasterLayer = useCallback(
+    (raster, GeoRasterLayer, transparentColor = null, tol = 30) => {
+      return new GeoRasterLayer({
+        georaster: raster,
+        opacity: 0.8,
+        resolution: 256,
+        updateWhenIdle: false,
+        updateWhenZooming: true,
+        keepBuffer: 4,
+        pixelValuesToColorFn: (values) => {
+          if (!values || values.every((v) => v == null)) return null;
+          const isMono = raster.numberOfRasters < 3;
+          const r = Math.round(values[0] ?? 0);
+          const g = Math.round(isMono ? values[0] : (values[1] ?? 0));
+          const b = Math.round(isMono ? values[0] : (values[2] ?? 0));
+          if (transparentColor) {
+            const diff =
+              Math.abs(r - transparentColor.r) +
+              Math.abs(g - transparentColor.g) +
+              Math.abs(b - transparentColor.b);
+            if (diff < tol * 3) return null;
+          }
+          const a = raster.numberOfRasters >= 4 ? (values[3] ?? 255) : 255;
+          return `rgba(${r},${g},${b},${a / 255})`;
+        },
+      });
+    },
+    [],
+  );
 
   const loadGeoTIFF = async (file) => {
     setLoading('GeoTIFF 로딩 중...');
     try {
       const [georaster, GeoRasterLayer] = await Promise.all([
-        import('georaster').then((m) => m.default || m),
-        import('georaster-layer-for-leaflet').then((m) => m.default || m),
+        import('georaster').then((m) => m.default ?? m),
+        import('georaster-layer-for-leaflet').then((m) => m.default ?? m),
       ]);
       const arrayBuffer = await new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -70,57 +89,34 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
       setLoading('GeoTIFF 렌더링 중...');
       const raster = await georaster(arrayBuffer);
 
-      // CRS 감지 및 좌표 변환
       const isWebMercator = raster.projection === 3857 || raster.xmin > 1000 || raster.xmin < -1000;
 
-      let sw, ne;
-      if (isWebMercator) {
-        sw = mercatorToLatLng(raster.xmin, raster.ymin);
-        ne = mercatorToLatLng(raster.xmax, raster.ymax);
-      } else {
-        sw = [raster.ymin, raster.xmin];
-        ne = [raster.ymax, raster.xmax];
-      }
+      const sw = isWebMercator
+        ? mercatorToLatLng(raster.xmin, raster.ymin)
+        : [raster.ymin, raster.xmin];
+      const ne = isWebMercator
+        ? mercatorToLatLng(raster.xmax, raster.ymax)
+        : [raster.ymax, raster.xmax];
 
-      const id = crypto.randomUUID();
-
-      const buildLayer = (transparentColor = null, tol = 30) => {
-        const layer = new GeoRasterLayer({
-          georaster: raster,
-          opacity: 0.8,
-          resolution: 128,
-          pixelValuesToColorFn: (values) => {
-            if (!values || values.every((v) => v === null || v === undefined)) return null;
-            const [r, g, b] =
-              raster.numberOfRasters >= 3
-                ? [values[0], values[1], values[2]]
-                : [values[0], values[0], values[0]];
-            if (transparentColor) {
-              const diff =
-                Math.abs(r - transparentColor.r) +
-                Math.abs(g - transparentColor.g) +
-                Math.abs(b - transparentColor.b);
-              if (diff < tol * 3) return null;
-            }
-            const a = raster.numberOfRasters >= 4 ? values[3] : 255;
-            return `rgba(${r},${g},${b},${a / 255})`;
-          },
-        });
-        return layer;
-      };
-
-      const layer = buildLayer();
-      layer.addTo(map);
-
-      const leafletBounds = [sw, ne];
-      map.fitBounds(leafletBounds, { padding: [40, 40] });
+      const id = genId();
+      const layer = buildRasterLayer(raster, GeoRasterLayer);
+      layer.addTo(mapRef.current);
+      mapRef.current.fitBounds([sw, ne], { padding: [40, 40] });
 
       layerRefs.current[id] = layer;
-      rasterRefs.current[id] = { raster, GeoRasterLayer, sw, ne, buildLayer };
-      const newOverlay = { id, name: file.name, type: 'GeoTIFF', visible: true, opacity: 0.8 };
+      rasterRefs.current[id] = { raster, GeoRasterLayer, isWebMercator, transparentColor: null };
 
-      setOverlays((prev) => [...prev, newOverlay]);
-      onImageAdded?.(newOverlay);
+      setOverlays((prev) => [
+        ...prev,
+        {
+          id,
+          name: file.name,
+          type: 'GeoTIFF',
+          visible: true,
+          opacity: 0.8,
+          transparentColor: null,
+        },
+      ]);
     } catch (e) {
       alert('GeoTIFF 로드 오류: ' + e.message);
     } finally {
@@ -137,25 +133,34 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
       alert('유효한 좌표를 입력하세요');
       return;
     }
-    const leafletBounds = [
-      [s, w],
-      [n, e],
-    ];
-    const layer = L.imageOverlay(placing.url, leafletBounds, { opacity: 0.85, interactive: true });
-    layer.addTo(map);
-    map.fitBounds(leafletBounds, { padding: [40, 40] });
-
-    const id = crypto.randomUUID();
+    const id = genId();
+    const layer = L.imageOverlay(
+      placing.url,
+      [
+        [s, w],
+        [n, e],
+      ],
+      { opacity: 0.85, interactive: true },
+    );
+    layer.addTo(mapRef.current);
+    mapRef.current.fitBounds(
+      [
+        [s, w],
+        [n, e],
+      ],
+      { padding: [40, 40] },
+    );
     layerRefs.current[id] = layer;
-    const newOverlay = { id, name: placing.name, type: '이미지', visible: true, opacity: 0.85 };
-    setOverlays((prev) => [...prev, newOverlay]);
-    onImageAdded?.(newOverlay);
+    setOverlays((prev) => [
+      ...prev,
+      { id, name: placing.name, type: '이미지', visible: true, opacity: 0.85 },
+    ]);
     setPlacing(null);
     setBounds({ n: '', s: '', e: '', w: '' });
   };
 
   const useMapBounds = () => {
-    const b = map.getBounds();
+    const b = mapRef.current.getBounds();
     setBounds({
       n: b.getNorth().toFixed(6),
       s: b.getSouth().toFixed(6),
@@ -170,8 +175,8 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
     setOverlays((prev) =>
       prev.map((o) => {
         if (o.id !== id) return o;
-        if (o.visible) map.removeLayer(layer);
-        else layer.addTo(map);
+        if (o.visible) mapRef.current.removeLayer(layer);
+        else layer.addTo(mapRef.current);
         return { ...o, visible: !o.visible };
       }),
     );
@@ -186,86 +191,76 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
   const removeOverlay = (id) => {
     const layer = layerRefs.current[id];
     if (layer) {
-      map.removeLayer(layer);
+      mapRef.current.removeLayer(layer);
       delete layerRefs.current[id];
     }
     delete rasterRefs.current[id];
-    if (eyedropper?.id === id) setEyedropper(null);
+    if (eyedroppingId === id) {
+      setEyedroppingId(null);
+      mapRef.current.off('click');
+      mapRef.current.getContainer().style.cursor = '';
+    }
     setOverlays((prev) => prev.filter((o) => o.id !== id));
   };
 
-  const applyEyedropper = (id, color) => {
-    const ref = rasterRefs.current[id];
-    if (!ref) return;
-    const oldLayer = layerRefs.current[id];
-    if (oldLayer) map.removeLayer(oldLayer);
-    const newLayer = ref.buildLayer(color, tolerance);
-    newLayer.addTo(map);
-    layerRefs.current[id] = newLayer;
-    setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, transparentColor: color } : o)));
-    setEyedropper(null);
-    map.off('click');
-    map.getContainer().style.cursor = '';
-  };
-
-  const startEyedropper = (id) => {
-    setEyedropper({ id });
-    map.getContainer().style.cursor = 'crosshair';
-    map.once('click', async (e) => {
+  const applyTransparentColor = useCallback(
+    (id, color, tol) => {
       const ref = rasterRefs.current[id];
       if (!ref) return;
-      // 클릭 위치 → 픽셀 좌표 변환
-      const { raster } = ref;
-      const lat = e.latlng.lat,
-        lng = e.latlng.lng;
-      // Web Mercator 변환
-      const x = (lng * 20037508.342) / 180;
-      const y =
-        ((Math.log(Math.tan(((90 + lat) * Math.PI) / 360)) / (Math.PI / 180)) * 20037508.342) / 180;
-      const isWebMercator = raster.projection === 3857 || raster.xmin > 1000 || raster.xmin < -1000;
-      const px = isWebMercator ? x : lng;
-      const py = isWebMercator ? y : lat;
+      const oldLayer = layerRefs.current[id];
+      if (oldLayer) mapRef.current.removeLayer(oldLayer);
+      const newLayer = buildRasterLayer(ref.raster, ref.GeoRasterLayer, color, tol);
+      const currentOpacity = overlays.find((o) => o.id === id)?.opacity ?? 0.8;
+      newLayer.setOpacity(currentOpacity);
+      newLayer.addTo(mapRef.current);
+      layerRefs.current[id] = newLayer;
+      rasterRefs.current[id] = { ...ref, transparentColor: color };
+      setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, transparentColor: color } : o)));
+    },
+    [buildRasterLayer, overlays, mapRef],
+  );
 
+  const startEyedropper = (id) => {
+    setEyedroppingId(id);
+    mapRef.current.getContainer().style.cursor = 'crosshair';
+    mapRef.current.once('click', (e) => {
+      const ref = rasterRefs.current[id];
+      if (!ref) return;
+      const { raster, isWebMercator } = ref;
+      let px, py;
+      if (isWebMercator) {
+        [px, py] = latLngToMercator(e.latlng.lat, e.latlng.lng);
+      } else {
+        px = e.latlng.lng;
+        py = e.latlng.lat;
+      }
       const col = Math.floor((px - raster.xmin) / raster.pixelWidth);
       const row = Math.floor((raster.ymax - py) / raster.pixelHeight);
-
       if (col < 0 || row < 0 || col >= raster.width || row >= raster.height) {
-        setEyedropper(null);
-        map.getContainer().style.cursor = '';
+        setEyedroppingId(null);
+        mapRef.current.getContainer().style.cursor = '';
         return;
       }
-
       const values = raster.values.map((band) => band[row]?.[col] ?? 0);
+      const isMono = raster.numberOfRasters < 3;
       const color = {
-        r: Math.round(values[0] || 0),
-        g: Math.round(raster.numberOfRasters >= 3 ? values[1] : values[0]),
-        b: Math.round(raster.numberOfRasters >= 3 ? values[2] : values[0]),
+        r: Math.round(values[0] ?? 0),
+        g: Math.round(isMono ? values[0] : (values[1] ?? 0)),
+        b: Math.round(isMono ? values[0] : (values[2] ?? 0)),
       };
-      applyEyedropper(id, color);
+      applyTransparentColor(id, color, tolerance);
+      setEyedroppingId(null);
+      mapRef.current.getContainer().style.cursor = '';
     });
   };
 
-  // 외부 초기화 트리거 감지
-  useEffect(() => {
-    if (!resetTrigger) return;
-    // 모든 레이어 제거
-    Object.values(layerRefs.current).forEach((layer) => {
-      try {
-        map.removeLayer(layer);
-      } catch {
-        /* layer already removed */
-      }
-    });
-    layerRefs.current = {};
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setOverlays([]);
-    setPlacing(null);
-    setLoading(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [resetTrigger, map]);
+  const cancelEyedropper = () => {
+    setEyedroppingId(null);
+    mapRef.current.off('click');
+    mapRef.current.getContainer().style.cursor = '';
+  };
 
   const s = {
-    section: { marginTop: 10 },
     title: {
       fontSize: 10,
       color: 'var(--text3)',
@@ -285,7 +280,7 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
       fontSize: 11,
       color: 'var(--text2)',
     }),
-    input: {
+    inp: {
       width: '100%',
       background: 'var(--bg)',
       border: '1px solid var(--border)',
@@ -296,23 +291,22 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
       fontFamily: 'monospace',
       outline: 'none',
     },
-    btn: (primary) => ({
-      padding: '5px 10px',
-      borderRadius: 6,
-      fontSize: 11,
+    btn: (primary, warn) => ({
+      padding: '2px 7px',
+      borderRadius: 5,
+      fontSize: 10,
       cursor: 'pointer',
-      border: `1px solid ${primary ? 'var(--accent)' : 'var(--border)'}`,
-      background: primary ? 'var(--accent)' : 'var(--bg3)',
-      color: primary ? '#fff' : 'var(--text)',
+      border: `1px solid ${warn ? 'var(--warn)' : primary ? 'var(--accent)' : 'var(--border)'}`,
+      background: warn ? 'rgba(251,191,36,0.15)' : primary ? 'var(--accent)' : 'var(--bg3)',
+      color: warn ? 'var(--warn)' : primary ? '#fff' : 'var(--text)',
       fontFamily: 'inherit',
     }),
   };
 
   return (
-    <div style={s.section}>
+    <div style={{ marginTop: 4 }}>
       <div style={s.title}>이미지 오버레이</div>
 
-      {/* Drop zone */}
       <div
         style={s.dropzone(dragging)}
         onDragOver={(e) => {
@@ -328,7 +322,7 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
         }}
         onClick={() => fileRef.current?.click()}
       >
-        🛩️ 드론/항공사진 또는 GeoTIFF 드래그
+        🛩️ 드론/항공사진 또는 GeoTIFF
         <div style={{ fontSize: 10, marginTop: 3, color: 'var(--text3)' }}>
           JPG · PNG · TIFF · GeoTIFF
         </div>
@@ -343,15 +337,14 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
         />
       </div>
 
-      {/* Loading indicator */}
       {loading && (
         <div
           style={{
             marginTop: 8,
-            padding: '10px 12px',
+            padding: '9px 12px',
             background: 'rgba(79,124,255,0.1)',
             border: '1px solid rgba(79,124,255,0.3)',
-            borderRadius: 8,
+            borderRadius: 7,
             display: 'flex',
             alignItems: 'center',
             gap: 8,
@@ -361,8 +354,8 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
         >
           <div
             style={{
-              width: 13,
-              height: 13,
+              width: 12,
+              height: 12,
               border: '2px solid rgba(79,124,255,0.3)',
               borderTopColor: 'var(--accent)',
               borderRadius: '50%',
@@ -374,7 +367,6 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
         </div>
       )}
 
-      {/* Bounds input for regular images */}
       {placing && (
         <div
           style={{
@@ -386,36 +378,41 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
           }}
         >
           <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>
-            📍 "{placing.name}" 위치 설정
+            📍 &quot;{placing.name}&quot; 위치 설정
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5, marginBottom: 6 }}>
             {[
-              ['n', '북위 (상단)'],
-              ['s', '남위 (하단)'],
-              ['e', '동경 (우측)'],
-              ['w', '서경 (좌측)'],
+              ['n', '북위(상단)'],
+              ['s', '남위(하단)'],
+              ['e', '동경(우측)'],
+              ['w', '서경(좌측)'],
             ].map(([k, label]) => (
               <div key={k}>
                 <div style={{ fontSize: 10, color: 'var(--text2)', marginBottom: 2 }}>{label}</div>
                 <input
-                  style={s.input}
+                  style={s.inp}
                   placeholder="37.xxx"
                   value={bounds[k]}
-                  onChange={(e) => setBounds((p) => ({ ...p, [k]: e.target.value }))}
+                  onChange={(ev) => setBounds((p) => ({ ...p, [k]: ev.target.value }))}
                 />
               </div>
             ))}
           </div>
           <div style={{ display: 'flex', gap: 5 }}>
-            <button onClick={useMapBounds} style={s.btn(false)}>
-              현재 지도 범위
+            <button onClick={useMapBounds} style={{ ...s.btn(false), padding: '5px 8px' }}>
+              현재 범위
             </button>
-            <button onClick={placeImageOverlay} style={s.btn(true)}>
-              지도에 올리기
+            <button onClick={placeImageOverlay} style={{ ...s.btn(true), padding: '5px 8px' }}>
+              올리기
             </button>
             <button
               onClick={() => setPlacing(null)}
-              style={{ ...s.btn(false), color: 'var(--danger)', borderColor: 'var(--danger)' }}
+              style={{
+                ...s.btn(false),
+                padding: '5px 8px',
+                color: 'var(--danger)',
+                borderColor: 'var(--danger)',
+              }}
             >
               ✕
             </button>
@@ -423,7 +420,6 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
         </div>
       )}
 
-      {/* Overlay list */}
       {overlays.map((o) => (
         <div
           key={o.id}
@@ -459,7 +455,7 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
                   padding: '1px 4px',
                   borderRadius: 3,
                   fontSize: 9,
-                  marginRight: 5,
+                  marginRight: 4,
                   color: 'var(--text2)',
                 }}
               >
@@ -467,79 +463,30 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
               </span>
               {o.name}
             </div>
-            <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 6 }}>
+            <div style={{ display: 'flex', gap: 3, flexShrink: 0, marginLeft: 5 }}>
               {o.type === 'GeoTIFF' && (
                 <button
                   onClick={() =>
-                    eyedropper?.id === o.id
-                      ? (setEyedropper(null),
-                        map.off('click'),
-                        (map.getContainer().style.cursor = ''))
-                      : startEyedropper(o.id)
+                    eyedroppingId === o.id ? cancelEyedropper() : startEyedropper(o.id)
                   }
                   title="스포이드: 클릭한 색상 투명 처리"
-                  style={{
-                    ...s.btn(eyedropper?.id === o.id),
-                    padding: '2px 7px',
-                    fontSize: 10,
-                    background: eyedropper?.id === o.id ? 'var(--warn)' : undefined,
-                    borderColor: eyedropper?.id === o.id ? 'var(--warn)' : undefined,
-                  }}
+                  style={s.btn(false, eyedroppingId === o.id)}
                 >
-                  {eyedropper?.id === o.id ? '클릭 중...' : '🔬'}
+                  {eyedroppingId === o.id ? '취소' : '🔬'}
                 </button>
               )}
-              {o.type === 'GeoTIFF' && o.transparentColor && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
-                  <span style={{ fontSize: 10, color: 'var(--text2)' }}>허용오차</span>
-                  <input
-                    type="range"
-                    min="5"
-                    max="100"
-                    step="5"
-                    value={tolerance}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value);
-                      setTolerance(val);
-                      applyEyedropper(o.id, o.transparentColor);
-                    }}
-                    style={{ flex: 1, accentColor: 'var(--warn)' }}
-                  />
-                  <span style={{ fontSize: 10, color: 'var(--text2)', width: 28 }}>
-                    {tolerance}
-                  </span>
-                  <div
-                    style={{
-                      width: 12,
-                      height: 12,
-                      borderRadius: 2,
-                      border: '1px solid var(--border)',
-                      flexShrink: 0,
-
-                      background: `rgb(${o.transparentColor.r},${o.transparentColor.g},${o.transparentColor.b})`,
-                    }}
-                  />
-                </div>
-              )}
-              <button
-                onClick={() => toggleOverlay(o.id)}
-                style={{ ...s.btn(false), padding: '2px 7px', fontSize: 10 }}
-              >
+              <button onClick={() => toggleOverlay(o.id)} style={s.btn(false)}>
                 {o.visible ? '숨김' : '표시'}
               </button>
               <button
                 onClick={() => removeOverlay(o.id)}
-                style={{
-                  ...s.btn(false),
-                  padding: '2px 7px',
-                  fontSize: 10,
-                  color: 'var(--danger)',
-                }}
+                style={{ ...s.btn(false), color: 'var(--danger)' }}
               >
                 ✕
               </button>
             </div>
           </div>
+
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontSize: 10, color: 'var(--text2)' }}>투명도</span>
             <input
@@ -555,6 +502,51 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
               {Math.round(o.opacity * 100)}%
             </span>
           </div>
+
+          {o.type === 'GeoTIFF' && o.transparentColor && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
+              <span style={{ fontSize: 10, color: 'var(--text2)' }}>허용오차</span>
+              <input
+                type="range"
+                min="5"
+                max="120"
+                step="5"
+                value={tolerance}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  setTolerance(val);
+                  applyTransparentColor(o.id, o.transparentColor, val);
+                }}
+                style={{ flex: 1, accentColor: 'var(--warn)' }}
+              />
+              <span style={{ fontSize: 10, color: 'var(--text2)', width: 22 }}>{tolerance}</span>
+              <div
+                title={`rgb(${o.transparentColor.r},${o.transparentColor.g},${o.transparentColor.b})`}
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: 3,
+                  border: '1px solid var(--border)',
+                  flexShrink: 0,
+                  background: `rgb(${o.transparentColor.r},${o.transparentColor.g},${o.transparentColor.b})`,
+                }}
+              />
+            </div>
+          )}
+
+          {eyedroppingId === o.id && (
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 10,
+                color: 'var(--warn)',
+                textAlign: 'center',
+                padding: '4px 0',
+              }}
+            >
+              🔬 지도에서 투명하게 할 색상을 클릭하세요
+            </div>
+          )}
         </div>
       ))}
 
@@ -563,48 +555,56 @@ function ImageOverlayPanel({ map, onImageAdded, resetTrigger }) {
   );
 }
 
-// ── Main MapView ──────────────────────────────────────────
+// ── MapView ───────────────────────────────────────────────
 export default function MapView({ rows, cols, vizType, layerType, onLayerChange, resetTrigger }) {
+  const containerRef = useRef(null);
   const mapRef = useRef(null);
-  const mapInstanceRef = useRef(null);
   const tileRef = useRef(null);
   const markersRef = useRef([]);
-  const [mapInstance, setMapInstance] = useState(null);
+  const overlayPanelRef = useRef({});
+  const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
-    if (mapInstanceRef.current) return;
-    const m = L.map(mapRef.current, { zoomControl: false }).setView([37.5, 127.0], 7);
+    if (mapRef.current) return;
+    const m = L.map(containerRef.current, { zoomControl: false }).setView([37.5, 127.0], 7);
     L.control.zoom({ position: 'topright' }).addTo(m);
-    tileRef.current = L.tileLayer(LAYERS.dark, { attribution: '', maxZoom: 19 }).addTo(m);
-    mapInstanceRef.current = m;
-    setMapInstance(m);
+    tileRef.current = L.tileLayer(TILE_LAYERS.dark, { attribution: '', maxZoom: 19 }).addTo(m);
+    mapRef.current = m;
+    setMapReady(true);
   }, []);
 
   useEffect(() => {
-    const m = mapInstanceRef.current;
-    if (!m || !tileRef.current) return;
-    m.removeLayer(tileRef.current);
-    tileRef.current = L.tileLayer(LAYERS[layerType] || LAYERS.dark, {
+    if (!mapRef.current || !tileRef.current) return;
+    mapRef.current.removeLayer(tileRef.current);
+    tileRef.current = L.tileLayer(TILE_LAYERS[layerType] ?? TILE_LAYERS.dark, {
       attribution: '',
       maxZoom: 19,
-    }).addTo(m);
+    }).addTo(mapRef.current);
+    // 타일 교체 후 raster 레이어들을 맨 위로 올리기
+    setTimeout(() => {
+      if (!overlayPanelRef.current) return;
+      Object.values(overlayPanelRef.current).forEach((layer) => {
+        try {
+          layer.bringToFront();
+        } catch {}
+      });
+    }, 100);
   }, [layerType]);
 
   useEffect(() => {
-    const m = mapInstanceRef.current;
-    if (!m) return;
-    markersRef.current.forEach((mk) => m.removeLayer(mk));
+    if (!mapRef.current) return;
+    markersRef.current.forEach((mk) => mapRef.current.removeLayer(mk));
     markersRef.current = [];
     if (!cols.lat || !cols.lng || !rows.length) return;
 
     const bounds = [];
     rows.forEach((row) => {
-      const lat = parseFloat(row[cols.lat]),
-        lng = parseFloat(row[cols.lng]);
+      const lat = parseFloat(row[cols.lat]);
+      const lng = parseFloat(row[cols.lng]);
       if (isNaN(lat) || isNaN(lng)) return;
 
-      const cat = row.category || row.type || row.분류 || row.카테고리 || 'default';
-      const color = CAT_COLORS[cat] || CAT_COLORS.default;
+      const cat = row.category ?? row.type ?? row.분류 ?? row.카테고리 ?? 'default';
+      const color = CAT_COLORS[cat] ?? CAT_COLORS.default;
 
       if (vizType === 'heatmap') {
         const c = L.circleMarker([lat, lng], {
@@ -612,7 +612,7 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
           fillColor: color,
           color: 'transparent',
           fillOpacity: 0.12,
-        }).addTo(m);
+        }).addTo(mapRef.current);
         markersRef.current.push(c);
       }
 
@@ -638,22 +638,21 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
           )
           .join('')}</div>`,
       );
-      mk.addTo(m);
+      mk.addTo(mapRef.current);
       markersRef.current.push(mk);
       bounds.push([lat, lng]);
     });
 
-    if (bounds.length) m.fitBounds(bounds, { padding: [40, 40] });
+    if (bounds.length) mapRef.current.fitBounds(bounds, { padding: [40, 40] });
   }, [rows, cols, vizType]);
 
-  // Legend
   const cats = [
-    ...new Set(rows.map((r) => r.category || r.type || r.분류 || r.카테고리).filter(Boolean)),
+    ...new Set(rows.map((r) => r.category ?? r.type ?? r.분류 ?? r.카테고리).filter(Boolean)),
   ];
 
   return (
     <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column' }}>
-      <div ref={mapRef} style={{ width: '100%', flex: 1 }} />
+      <div ref={containerRef} style={{ width: '100%', flex: 1 }} />
 
       {/* Layer controls */}
       <div
@@ -730,7 +729,7 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
                   width: 9,
                   height: 9,
                   borderRadius: '50%',
-                  background: CAT_COLORS[c] || CAT_COLORS.default,
+                  background: CAT_COLORS[c] ?? CAT_COLORS.default,
                   flexShrink: 0,
                 }}
               />
@@ -740,8 +739,8 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
         </div>
       )}
 
-      {/* Image overlay panel — bottom right */}
-      {mapInstance && (
+      {/* Image overlay panel */}
+      {mapReady && (
         <div
           style={{
             position: 'absolute',
@@ -753,12 +752,12 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
             border: '1px solid var(--border)',
             borderRadius: 10,
             padding: '12px 14px',
-            width: 260,
+            width: 270,
             maxHeight: '60vh',
             overflowY: 'auto',
           }}
         >
-          <ImageOverlayPanel map={mapInstance} resetTrigger={resetTrigger} />
+          <ImageOverlayPanel mapRef={mapRef} resetTrigger={resetTrigger} />
         </div>
       )}
     </div>

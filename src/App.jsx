@@ -53,7 +53,7 @@ export default function App() {
               letterSpacing: 0,
             }}
           >
-            by SPH
+            by suhyun
           </small>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
