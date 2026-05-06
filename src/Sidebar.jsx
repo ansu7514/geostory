@@ -238,6 +238,8 @@ export default function Sidebar({
   onProcessFile,
   fileType,
   error,
+  colorCol,
+  onColorColChange,
 }) {
   const fileRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
@@ -524,34 +526,157 @@ export default function Sidebar({
                 </div>
               ))}
             </div>
-            <div style={s.panelTitle}>감지된 컬럼</div>
-            <div style={{ maxHeight: 72, overflowY: 'auto' }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 5,
+              }}
+            >
+              <div style={s.panelTitle}>
+                컬럼 선택{' '}
+                <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(클릭 시 색상 분류)</span>
+              </div>
+              {colorCol && (
+                <button
+                  onClick={() => onColorColChange(null)}
+                  style={{
+                    fontSize: 10,
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text3)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  초기화
+                </button>
+              )}
+            </div>
+            <div style={{ maxHeight: 90, overflowY: 'auto' }}>
               {fields.map((f) => {
                 const isGeo = f === cols.lat || f === cols.lng;
                 const isAddr = f === cols.addr;
+                const isSelected = f === colorCol;
+                const isClickable = !isGeo && !isAddr;
+
                 return (
                   <span
                     key={f}
+                    onClick={() => isClickable && onColorColChange(isSelected ? null : f)}
+                    title={isClickable ? `"${f}" 기준으로 색상 분류` : ''}
                     style={{
                       display: 'inline-block',
                       margin: 2,
                       padding: '2px 7px',
                       borderRadius: 4,
                       fontSize: 10,
-                      background: isGeo
-                        ? 'rgba(74,222,128,0.1)'
-                        : isAddr
-                          ? 'rgba(251,191,36,0.1)'
-                          : 'var(--bg3)',
-                      border: `1px solid ${isGeo ? 'rgba(74,222,128,0.3)' : isAddr ? 'rgba(251,191,36,0.3)' : 'var(--border)'}`,
-                      color: isGeo ? 'var(--success)' : isAddr ? 'var(--warn)' : 'var(--text2)',
+                      cursor: isClickable ? 'pointer' : 'default',
+                      background: isSelected
+                        ? 'rgba(79,124,255,0.15)'
+                        : isGeo
+                          ? 'rgba(74,222,128,0.1)'
+                          : isAddr
+                            ? 'rgba(251,191,36,0.1)'
+                            : 'var(--bg3)',
+                      border: `1px solid ${isSelected ? 'var(--accent)' : isGeo ? 'rgba(74,222,128,0.3)' : isAddr ? 'rgba(251,191,36,0.3)' : 'var(--border)'}`,
+                      color: isSelected
+                        ? 'var(--accent)'
+                        : isGeo
+                          ? 'var(--success)'
+                          : isAddr
+                            ? 'var(--warn)'
+                            : 'var(--text2)',
+                      transition: 'all 0.12s',
                     }}
                   >
                     {f}
+                    {isSelected && ' ✓'}
                   </span>
                 );
               })}
             </div>
+
+            {/* 선택된 컬럼 고유값 미리보기 */}
+            {colorCol &&
+              (() => {
+                const uniqVals = [
+                  ...new Set(
+                    rows
+                      .map((r) => r[colorCol])
+                      .filter((v) => v !== null && v !== undefined && v !== ''),
+                  ),
+                ];
+                const PALETTE = [
+                  '#4f7cff',
+                  '#4ade80',
+                  '#fbbf24',
+                  '#f87171',
+                  '#c084fc',
+                  '#34d399',
+                  '#fb923c',
+                  '#60a5fa',
+                  '#f472b6',
+                  '#a78bfa',
+                  '#2dd4bf',
+                  '#86efac',
+                ];
+                return (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: '8px 10px',
+                      background: 'var(--bg3)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 7,
+                    }}
+                  >
+                    <div style={{ fontSize: 10, color: 'var(--text2)', marginBottom: 6 }}>
+                      <b style={{ color: 'var(--accent)' }}>{colorCol}</b> 기준 색상 분류 ·{' '}
+                      {uniqVals.length}개 값
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {uniqVals.slice(0, 12).map((v, i) => (
+                        <div
+                          key={v}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            fontSize: 10,
+                            color: 'var(--text2)',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: '50%',
+                              background: PALETTE[i % PALETTE.length],
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span
+                            style={{
+                              maxWidth: 70,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {String(v)}
+                          </span>
+                        </div>
+                      ))}
+                      {uniqVals.length > 12 && (
+                        <span style={{ fontSize: 10, color: 'var(--text3)' }}>
+                          +{uniqVals.length - 12}개
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
             {geocoding && (
               <div

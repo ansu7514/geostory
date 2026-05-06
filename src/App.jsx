@@ -7,6 +7,7 @@ export default function App() {
   const [vizType, setVizType] = useState('marker');
   const [layerType, setLayerType] = useState('dark');
   const [resetTrigger, setResetTrigger] = useState(0);
+  const [colorCol, setColorCol] = useState(null);
   const {
     rows,
     cols,
@@ -81,7 +82,10 @@ export default function App() {
           onReset={() => {
             reset();
             setResetTrigger((t) => t + 1);
+            setColorCol(null);
           }}
+          colorCol={colorCol}
+          onColorColChange={setColorCol}
           onProcessFile={processFile}
         />
         <MapView
@@ -91,6 +95,7 @@ export default function App() {
           layerType={layerType}
           onLayerChange={setLayerType}
           resetTrigger={resetTrigger}
+          colorCol={colorCol}
         />
       </div>
     </div>

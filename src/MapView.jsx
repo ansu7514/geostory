@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import { CAT_COLORS, TILE_LAYERS, mercatorToLatLng, latLngToMercator, genId } from './constants';
 
@@ -15,7 +15,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
   const layerRefs = useRef({});
   const rasterRefs = useRef({});
 
-  // 외부 초기화 트리거
   useEffect(() => {
     if (!resetTrigger || !mapRef.current) return;
     Object.values(layerRefs.current).forEach((layer) => {
@@ -47,7 +46,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
     (raster, GeoRasterLayer, transparentColor = null, tol = 30) => {
       return new GeoRasterLayer({
         georaster: raster,
-        opacity: 0.8,
+        opacity: 1,
         resolution: 256,
         updateWhenIdle: false,
         updateWhenZooming: true,
@@ -90,7 +89,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       const raster = await georaster(arrayBuffer);
 
       const isWebMercator = raster.projection === 3857 || raster.xmin > 1000 || raster.xmin < -1000;
-
       const sw = isWebMercator
         ? mercatorToLatLng(raster.xmin, raster.ymin)
         : [raster.ymin, raster.xmin];
@@ -104,7 +102,13 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       mapRef.current.fitBounds([sw, ne], { padding: [40, 40] });
 
       layerRefs.current[id] = layer;
-      rasterRefs.current[id] = { raster, GeoRasterLayer, isWebMercator, transparentColor: null };
+      rasterRefs.current[id] = {
+        raster,
+        GeoRasterLayer,
+        isWebMercator,
+        transparentColor: null,
+        tolerance: 30,
+      };
 
       setOverlays((prev) => [
         ...prev,
@@ -182,9 +186,25 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
     );
   };
 
+  // GeoTIFF는 레이어 재생성, 일반 이미지는 setOpacity
   const changeOpacity = (id, val) => {
-    const layer = layerRefs.current[id];
-    if (layer?.setOpacity) layer.setOpacity(val);
+    const ref = rasterRefs.current[id];
+    if (ref) {
+      const oldLayer = layerRefs.current[id];
+      if (oldLayer) mapRef.current.removeLayer(oldLayer);
+      const newLayer = buildRasterLayer(
+        ref.raster,
+        ref.GeoRasterLayer,
+        ref.transparentColor,
+        ref.tolerance ?? 30,
+      );
+      newLayer.setOpacity(val);
+      newLayer.addTo(mapRef.current);
+      layerRefs.current[id] = newLayer;
+    } else {
+      const layer = layerRefs.current[id];
+      if (layer?.setOpacity) layer.setOpacity(val);
+    }
     setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, opacity: val } : o)));
   };
 
@@ -214,7 +234,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       newLayer.setOpacity(currentOpacity);
       newLayer.addTo(mapRef.current);
       layerRefs.current[id] = newLayer;
-      rasterRefs.current[id] = { ...ref, transparentColor: color };
+      rasterRefs.current[id] = { ...ref, transparentColor: color, tolerance: tol };
       setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, transparentColor: color } : o)));
     },
     [buildRasterLayer, overlays, mapRef],
@@ -306,7 +326,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
   return (
     <div style={{ marginTop: 4 }}>
       <div style={s.title}>이미지 오버레이</div>
-
       <div
         style={s.dropzone(dragging)}
         onDragOver={(e) => {
@@ -555,8 +574,31 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
   );
 }
 
+const PALETTE = [
+  '#4f7cff',
+  '#4ade80',
+  '#fbbf24',
+  '#f87171',
+  '#c084fc',
+  '#34d399',
+  '#fb923c',
+  '#60a5fa',
+  '#f472b6',
+  '#a78bfa',
+  '#2dd4bf',
+  '#86efac',
+];
+
 // ── MapView ───────────────────────────────────────────────
-export default function MapView({ rows, cols, vizType, layerType, onLayerChange, resetTrigger }) {
+export default function MapView({
+  rows,
+  cols,
+  vizType,
+  layerType,
+  onLayerChange,
+  resetTrigger,
+  colorCol,
+}) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const tileRef = useRef(null);
@@ -580,16 +622,38 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
       attribution: '',
       maxZoom: 19,
     }).addTo(mapRef.current);
-    // 타일 교체 후 raster 레이어들을 맨 위로 올리기
     setTimeout(() => {
       if (!overlayPanelRef.current) return;
       Object.values(overlayPanelRef.current).forEach((layer) => {
         try {
           layer.bringToFront();
-        } catch {}
+        } catch {
+          /* empty */
+        }
       });
     }, 100);
   }, [layerType]);
+
+  const colorMap = useMemo(() => {
+    if (!colorCol) return {};
+    const map = {};
+    rows.forEach((r) => {
+      const val = String(r[colorCol] ?? '');
+      if (val && !map[val]) map[val] = PALETTE[Object.keys(map).length % PALETTE.length];
+    });
+    return map;
+  }, [rows, colorCol]);
+
+  const getColor = useCallback(
+    (row) => {
+      if (colorCol && row[colorCol] != null && row[colorCol] !== '') {
+        return colorMap[String(row[colorCol])] ?? CAT_COLORS.default;
+      }
+      const cat = row.category ?? row.type ?? row.분류 ?? row.카테고리 ?? 'default';
+      return CAT_COLORS[cat] ?? CAT_COLORS.default;
+    },
+    [colorCol, colorMap],
+  );
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -602,9 +666,7 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
       const lat = parseFloat(row[cols.lat]);
       const lng = parseFloat(row[cols.lng]);
       if (isNaN(lat) || isNaN(lng)) return;
-
-      const cat = row.category ?? row.type ?? row.분류 ?? row.카테고리 ?? 'default';
-      const color = CAT_COLORS[cat] ?? CAT_COLORS.default;
+      const color = getColor(row);
 
       if (vizType === 'heatmap') {
         const c = L.circleMarker([lat, lng], {
@@ -628,15 +690,7 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
         .filter(([k]) => !k.startsWith('_'))
         .slice(0, 7);
       mk.bindPopup(
-        `<div style="min-width:170px">${entries
-          .map(
-            ([k, v]) =>
-              `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0;border-bottom:0.5px solid #2e3350;font-size:11px">
-          <span style="color:#8892b0;flex-shrink:0">${k}</span>
-          <span style="color:#e8eaf6;text-align:right;word-break:break-all">${v}</span>
-        </div>`,
-          )
-          .join('')}</div>`,
+        `<div style="min-width:170px">${entries.map(([k, v]) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0;border-bottom:0.5px solid #2e3350;font-size:11px"><span style="color:#8892b0;flex-shrink:0">${k}</span><span style="color:#e8eaf6;text-align:right;word-break:break-all">${v}</span></div>`).join('')}</div>`,
       );
       mk.addTo(mapRef.current);
       markersRef.current.push(mk);
@@ -644,17 +698,23 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
     });
 
     if (bounds.length) mapRef.current.fitBounds(bounds, { padding: [40, 40] });
-  }, [rows, cols, vizType]);
+  }, [rows, cols, vizType, getColor]);
 
-  const cats = [
-    ...new Set(rows.map((r) => r.category ?? r.type ?? r.분류 ?? r.카테고리).filter(Boolean)),
-  ];
+  const cats = colorCol
+    ? [
+        ...new Set(
+          rows.map((r) => r[colorCol]).filter((v) => v !== null && v !== undefined && v !== ''),
+        ),
+      ].slice(0, 12)
+    : [...new Set(rows.map((r) => r.category ?? r.type ?? r.분류 ?? r.카테고리).filter(Boolean))];
+
+  const getCatColor = (c) =>
+    colorCol ? (colorMap[String(c)] ?? CAT_COLORS.default) : (CAT_COLORS[c] ?? CAT_COLORS.default);
 
   return (
     <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column' }}>
       <div ref={containerRef} style={{ width: '100%', flex: 1 }} />
 
-      {/* Layer controls */}
       <div
         style={{
           position: 'absolute',
@@ -686,7 +746,6 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
         ))}
       </div>
 
-      {/* Legend */}
       {cats.length >= 2 && (
         <div
           style={{
@@ -729,7 +788,7 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
                   width: 9,
                   height: 9,
                   borderRadius: '50%',
-                  background: CAT_COLORS[c] ?? CAT_COLORS.default,
+                  background: getCatColor(c),
                   flexShrink: 0,
                 }}
               />
@@ -739,7 +798,6 @@ export default function MapView({ rows, cols, vizType, layerType, onLayerChange,
         </div>
       )}
 
-      {/* Image overlay panel */}
       {mapReady && (
         <div
           style={{
