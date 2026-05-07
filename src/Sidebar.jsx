@@ -149,7 +149,7 @@ async function callGemini(apiKey, prompt) {
       const data = await res.json();
       if (!res.ok) {
         const msg = data.error?.message || `HTTP ${res.status}`;
-        const isSkippable =
+        const skip =
           res.status === 429 ||
           res.status === 404 ||
           res.status === 400 ||
@@ -161,7 +161,7 @@ async function callGemini(apiKey, prompt) {
           msg.includes('limit') ||
           msg.includes('disabled');
         errors.push(`[${model}] ${msg}`);
-        if (isSkippable) continue;
+        if (skip) continue;
         throw new Error(`${model}: ${msg}`);
       }
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -169,13 +169,13 @@ async function callGemini(apiKey, prompt) {
       errors.push(`[${model}] 빈 응답`);
     } catch (e) {
       errors.push(`[${model}] ${e.message}`);
-      const isSkippable =
+      const skip =
         e.message?.includes('quota') ||
         e.message?.includes('RESOURCE_EXHAUSTED') ||
         e.message?.includes('not found') ||
         e.message?.includes('free_tier') ||
         e.message?.includes('429');
-      if (!isSkippable) throw e;
+      if (!skip) throw e;
     }
   }
   throw new Error('모든 모델 실패:\n' + errors.join('\n'));
@@ -200,7 +200,6 @@ function buildPrompt(rows, cols) {
     });
     return o;
   });
-
   return `당신은 GIS 및 공간 데이터 전문 분석가입니다. 아래 데이터를 분석하고 공간 인사이트를 JSON으로 반환하세요.
 
 데이터 개요:
@@ -213,16 +212,23 @@ ${catCol ? `- 카테고리(${catCol}): ${catVals.join(', ')}` : ''}
 ${JSON.stringify(sample, null, 2)}
 
 아래 JSON 형식으로만 응답하세요 (마크다운/코드블록 없이 순수 JSON):
-{
-  "summary": "한 줄 핵심 요약 (20자 이내)",
-  "insights": [
-    {"icon": "이모지", "title": "인사이트 제목", "body": "구체적인 수치와 함께 2~3문장 설명"},
-    {"icon": "이모지", "title": "공간 패턴", "body": "지리적 분포 특성과 밀집/분산 패턴 설명"},
-    {"icon": "이모지", "title": "핵심 발견", "body": "가장 주목할 만한 데이터 포인트와 이유"},
-    {"icon": "💡", "title": "활용 제안", "body": "이 데이터로 할 수 있는 구체적인 업무/비즈니스 활용 방법"}
-  ]
-}`;
+{"summary":"한 줄 핵심 요약 (20자 이내)","insights":[{"icon":"이모지","title":"인사이트 제목","body":"구체적인 수치와 함께 2~3문장 설명"},{"icon":"이모지","title":"공간 패턴","body":"지리적 분포 특성과 밀집/분산 패턴 설명"},{"icon":"이모지","title":"핵심 발견","body":"가장 주목할 만한 데이터 포인트와 이유"},{"icon":"💡","title":"활용 제안","body":"이 데이터로 할 수 있는 구체적인 업무/비즈니스 활용 방법"}]}`;
 }
+
+const PALETTE = [
+  '#4f7cff',
+  '#4ade80',
+  '#fbbf24',
+  '#f87171',
+  '#c084fc',
+  '#34d399',
+  '#fb923c',
+  '#60a5fa',
+  '#f472b6',
+  '#a78bfa',
+  '#2dd4bf',
+  '#86efac',
+];
 
 export default function Sidebar({
   rows,
@@ -255,6 +261,31 @@ export default function Sidebar({
   const hasData = rows.length > 0;
   const fields = hasData ? Object.keys(rows[0]).filter((k) => !k.startsWith('_')) : [];
 
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const f = e.dataTransfer.files[0];
+    if (f) onProcessFile(f);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+  const handleClick = () => fileRef.current?.click();
+  const handleFileChange = (e) => {
+    if (e.target.files[0]) {
+      onProcessFile(e.target.files[0]);
+      e.target.value = '';
+    }
+  };
+
   const loadSample = (key) => {
     const data = SAMPLE_SETS[key];
     setActiveSample(key);
@@ -275,10 +306,8 @@ export default function Sidebar({
     setAiError(null);
     try {
       if (geminiKey) {
-        const prompt = buildPrompt(rows, cols);
-        const text = await callGemini(geminiKey, prompt);
-        const clean = text.replace(/```json|```/g, '').trim();
-        const result = JSON.parse(clean);
+        const text = await callGemini(geminiKey, buildPrompt(rows, cols));
+        const result = JSON.parse(text.replace(/```json|```/g, '').trim());
         setInsights({ ...result, source: 'gemini' });
       } else {
         await new Promise((r) => setTimeout(r, 700));
@@ -287,16 +316,13 @@ export default function Sidebar({
       setShareId(Math.random().toString(36).substr(2, 8));
     } catch (e) {
       setAiError(e.message);
-      // fallback to local
       setInsights({ ...analyzeLocally(rows, cols), source: 'local' });
     }
     setAnalyzing(false);
   };
 
   const copyLink = () => {
-    navigator.clipboard
-      .writeText(`https://geostory-psi.vercel.app/view/${shareId}`)
-      .catch(() => {});
+    navigator.clipboard.writeText(`https://geostory-mu.vercel.app/view/${shareId}`).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -343,19 +369,21 @@ export default function Sidebar({
     }),
   };
 
-  const FILE_TYPES = ['.csv', '.tsv', '.xlsx', '.xls', '.json', '.geojson'];
+  const FILE_TYPES = ['.csv', '.tsv', '.xlsx', '.xls', '.json', '.geojson', '.jpg', '.png', '.tif'];
 
   return (
     <div style={s.sidebar}>
-      {/* Upload panel */}
       <div style={s.panel}>
         <div style={s.panelTitle}>데이터 업로드</div>
-
         {!hasData ? (
           <>
+            {/* 드래그/클릭 업로드 영역 */}
             <div
+              onClick={handleClick}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
               style={{
-                position: 'relative',
                 border: `1.5px dashed ${dragOver ? 'var(--accent)' : 'var(--border)'}`,
                 borderRadius: 12,
                 padding: '18px 14px',
@@ -365,64 +393,42 @@ export default function Sidebar({
                   ? 'rgba(79,124,255,0.07)'
                   : 'linear-gradient(135deg,rgba(79,124,255,0.03),rgba(124,79,255,0.03))',
                 transition: 'all 0.2s',
+                userSelect: 'none',
               }}
             >
-              <div style={{ pointerEvents: 'none' }}>
-                <div style={{ fontSize: 24, marginBottom: 5 }}>📂</div>
-                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>
-                  파일 드래그 또는 클릭
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
-                  위경도·주소 컬럼 자동 인식 / GeoJSON 지원
-                </div>
-                <div
-                  style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'center' }}
-                >
-                  {FILE_TYPES.map((t) => (
-                    <span
-                      key={t}
-                      style={{
-                        background: 'var(--bg3)',
-                        border: '1px solid var(--border)',
-                        color: 'var(--text2)',
-                        padding: '2px 6px',
-                        borderRadius: 4,
-                        fontSize: 10,
-                        fontFamily: 'monospace',
-                      }}
-                    >
-                      {t}
-                    </span>
-                  ))}
-                </div>
+              <div style={{ fontSize: 24, marginBottom: 5 }}>📂</div>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>
+                파일 드래그 또는 클릭
               </div>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".csv,.tsv,.xlsx,.xls,.json,.geojson"
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  width: '100%',
-                  height: '100%',
-                  opacity: 0,
-                  cursor: 'pointer',
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragOver(true);
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragOver(false);
-                  if (e.dataTransfer.files[0]) onProcessFile(e.dataTransfer.files[0]);
-                }}
-                onChange={(e) => {
-                  if (e.target.files[0]) onProcessFile(e.target.files[0]);
-                }}
-              />
+              <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
+                데이터 파일 또는 이미지/GeoTIFF 업로드
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'center' }}>
+                {FILE_TYPES.map((t) => (
+                  <span
+                    key={t}
+                    style={{
+                      background: 'var(--bg3)',
+                      border: '1px solid var(--border)',
+                      color: 'var(--text2)',
+                      padding: '2px 6px',
+                      borderRadius: 4,
+                      fontSize: 10,
+                      fontFamily: 'monospace',
+                    }}
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
             </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,.tsv,.xlsx,.xls,.json,.geojson,.jpg,.jpeg,.png,.webp,.tif,.tiff"
+              style={{ display: 'none' }}
+              onChange={handleFileChange}
+            />
 
             {error && (
               <div
@@ -440,7 +446,6 @@ export default function Sidebar({
               </div>
             )}
 
-            {/* Sample data */}
             <div style={{ marginTop: 12 }}>
               <div style={s.panelTitle}>샘플 데이터</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -534,6 +539,7 @@ export default function Sidebar({
                 </div>
               ))}
             </div>
+
             <div
               style={{
                 display: 'flex',
@@ -567,7 +573,6 @@ export default function Sidebar({
                 const isAddr = f === cols.addr;
                 const isSelected = f === colorCol;
                 const isClickable = !isGeo && !isAddr;
-
                 return (
                   <span
                     key={f}
@@ -605,7 +610,6 @@ export default function Sidebar({
               })}
             </div>
 
-            {/* 선택된 컬럼 고유값 미리보기 */}
             {colorCol &&
               (() => {
                 const uniqVals = [
@@ -614,20 +618,6 @@ export default function Sidebar({
                       .map((r) => r[colorCol])
                       .filter((v) => v !== null && v !== undefined && v !== ''),
                   ),
-                ];
-                const PALETTE = [
-                  '#4f7cff',
-                  '#4ade80',
-                  '#fbbf24',
-                  '#f87171',
-                  '#c084fc',
-                  '#34d399',
-                  '#fb923c',
-                  '#60a5fa',
-                  '#f472b6',
-                  '#a78bfa',
-                  '#2dd4bf',
-                  '#86efac',
                 ];
                 return (
                   <div
@@ -640,8 +630,8 @@ export default function Sidebar({
                     }}
                   >
                     <div style={{ fontSize: 10, color: 'var(--text2)', marginBottom: 6 }}>
-                      <b style={{ color: 'var(--accent)' }}>{colorCol}</b> 기준 색상 분류 ·{' '}
-                      {uniqVals.length}개 값
+                      <b style={{ color: 'var(--accent)' }}>{colorCol}</b> 기준 · {uniqVals.length}
+                      개 값
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                       {uniqVals.slice(0, 12).map((v, i) => (
@@ -784,7 +774,6 @@ export default function Sidebar({
               </div>
             ))}
           </div>
-
           {showKeyInput && (
             <div style={{ marginTop: 10 }}>
               <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 5 }}>
@@ -846,7 +835,6 @@ export default function Sidebar({
             </p>
           </div>
         )}
-
         {hasData && !insights && !analyzing && (
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
             <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 12, lineHeight: 1.7 }}>
@@ -864,7 +852,6 @@ export default function Sidebar({
             </button>
           </div>
         )}
-
         {analyzing && (
           <div
             style={{
@@ -890,7 +877,6 @@ export default function Sidebar({
             {geminiKey ? 'Gemini AI 분석 중...' : '공간 패턴 분석 중...'}
           </div>
         )}
-
         {aiError && (
           <div
             style={{
@@ -908,7 +894,6 @@ export default function Sidebar({
             <span style={{ color: 'var(--text2)' }}>규칙 기반으로 대체 분석됩니다</span>
           </div>
         )}
-
         {insights && (
           <>
             <div
@@ -987,7 +972,7 @@ export default function Sidebar({
                 whiteSpace: 'nowrap',
               }}
             >
-              geostory-psi.vercel.app/view/{shareId}
+              geostory-mu.vercel.app/view/{shareId}
             </div>
             <button
               onClick={copyLink}
@@ -1017,7 +1002,6 @@ export default function Sidebar({
   );
 }
 
-// ── Local fallback analysis ──────────────────────────────
 function analyzeLocally(rows, cols) {
   const fields = Object.keys(rows[0] || {}).filter((k) => !k.startsWith('_'));
   const catCol = fields.find((f) => /category|type|분류|카테고리|업종|구분|brand/i.test(f));
@@ -1029,7 +1013,6 @@ function analyzeLocally(rows, cols) {
   );
   const nameCol = fields.find((f) => /name|명칭|이름|지점|시설명|상호|title/i.test(f)) || fields[0];
   const insights = [];
-
   if (catCol) {
     const dist = {};
     rows.forEach((r) => {
@@ -1045,7 +1028,6 @@ function analyzeLocally(rows, cols) {
       body: `${Object.keys(dist).length}개 카테고리 중 "${top[0]?.[0]}"이 ${top[0]?.[1]}개(${Math.round(((top[0]?.[1] || 0) / rows.length) * 100)}%)로 최다. 상위 3개: ${top.map(([k, v]) => `${k}(${v})`).join(', ')}.`,
     });
   }
-
   if (numCol) {
     const vals = rows.map((r) => parseFloat(r[numCol])).filter((v) => !isNaN(v));
     const max = Math.max(...vals),
@@ -1058,7 +1040,6 @@ function analyzeLocally(rows, cols) {
       body: `평균 ${avg.toLocaleString()}, 최대 ${max.toLocaleString()}(${maxRow?.[nameCol] || ''}), 최소 ${min.toLocaleString()}. 최대치가 평균의 ${Math.round(max / avg)}배로 특정 지점에 집중.`,
     });
   }
-
   const lats = rows.map((r) => parseFloat(r[cols.lat])).filter((v) => !isNaN(v));
   const lngs = rows.map((r) => parseFloat(r[cols.lng])).filter((v) => !isNaN(v));
   if (lats.length) {
@@ -1070,12 +1051,10 @@ function analyzeLocally(rows, cols) {
       body: `위도 ${latSpan}°, 경도 ${lngSpan}° 범위에 ${lats.length}개 포인트 분포. ${parseFloat(latSpan) > 2 ? '전국 광역 분포 — 지역별 비교 분석 유효.' : '특정 지역 집중 — 로컬 밀집도 분석에 적합.'}`,
     });
   }
-
   insights.push({
     icon: '💡',
     title: '활용 제안',
     body: `${numCol ? `${numCol} 수치 기준으로 버블 크기를 조정하면 시각적 임팩트가 높아집니다. ` : ''}고객에게 이 링크 하나로 지도 시각화를 바로 공유할 수 있습니다.`,
   });
-
   return { summary: `${rows.length}개 포인트 · ${fields.length}개 속성 분석 완료`, insights };
 }

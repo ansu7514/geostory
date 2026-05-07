@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import MapView from './MapView';
 import Sidebar from './Sidebar';
 import { useGeoData } from './useGeoData';
@@ -8,6 +8,8 @@ export default function App() {
   const [layerType, setLayerType] = useState('dark');
   const [resetTrigger, setResetTrigger] = useState(0);
   const [colorCol, setColorCol] = useState(null);
+  const imageHandlerRef = useRef(null); // MapView가 등록하는 이미지 처리 함수
+
   const {
     rows,
     cols,
@@ -21,6 +23,17 @@ export default function App() {
     loadDirect,
     reset,
   } = useGeoData();
+
+  const handleFile = (file) => {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'].includes(ext)) {
+      // 이미지/GeoTIFF → MapView의 오버레이 패널로 전달
+      imageHandlerRef.current?.(file);
+    } else {
+      // 데이터 파일 → 기존 처리
+      processFile(file);
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -57,13 +70,11 @@ export default function App() {
             by suhyun
           </small>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {rows.length > 0 && (
-            <span style={{ fontSize: 11, color: 'var(--text3)' }}>
-              {mappedCount.toLocaleString()}개 포인트 표시 중
-            </span>
-          )}
-        </div>
+        {rows.length > 0 && (
+          <span style={{ fontSize: 11, color: 'var(--text3)' }}>
+            {mappedCount.toLocaleString()}개 포인트 표시 중
+          </span>
+        )}
       </header>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -84,9 +95,9 @@ export default function App() {
             setResetTrigger((t) => t + 1);
             setColorCol(null);
           }}
+          onProcessFile={handleFile}
           colorCol={colorCol}
           onColorColChange={setColorCol}
-          onProcessFile={processFile}
         />
         <MapView
           rows={rows}
@@ -96,6 +107,7 @@ export default function App() {
           onLayerChange={setLayerType}
           resetTrigger={resetTrigger}
           colorCol={colorCol}
+          imageHandlerRef={imageHandlerRef}
         />
       </div>
     </div>

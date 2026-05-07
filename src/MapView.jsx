@@ -2,8 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import { CAT_COLORS, TILE_LAYERS, mercatorToLatLng, latLngToMercator, genId } from './constants';
 
-// ── ImageOverlayPanel ─────────────────────────────────────
-function ImageOverlayPanel({ mapRef, resetTrigger }) {
+function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
   const [overlays, setOverlays] = useState([]);
   const [dragging, setDragging] = useState(false);
   const [placing, setPlacing] = useState(null);
@@ -14,15 +13,23 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
   const fileRef = useRef(null);
   const layerRefs = useRef({});
   const rasterRefs = useRef({});
+  const overlaysRef = useRef([]);
+
+  useEffect(() => {
+    overlaysRef.current = overlays;
+  }, [overlays]);
+
+  // 부모에 파일 처리 함수 등록
+  useEffect(() => {
+    onRegisterHandler?.(loadFile);
+  }, []);
 
   useEffect(() => {
     if (!resetTrigger || !mapRef.current) return;
-    Object.values(layerRefs.current).forEach((layer) => {
+    Object.values(layerRefs.current).forEach((l) => {
       try {
-        mapRef.current.removeLayer(layer);
-      } catch {
-        /* ignore */
-      }
+        mapRef.current.removeLayer(l);
+      } catch {}
     });
     layerRefs.current = {};
     rasterRefs.current = {};
@@ -31,16 +38,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
     setLoading(null);
     setEyedroppingId(null);
   }, [resetTrigger, mapRef]);
-
-  const loadFile = (file) => {
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (['tif', 'tiff'].includes(ext)) {
-      loadGeoTIFF(file);
-    } else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
-      const url = URL.createObjectURL(file);
-      setPlacing({ url, name: file.name });
-    }
-  };
 
   const buildRasterLayer = useCallback(
     (raster, GeoRasterLayer, transparentColor = null, tol = 30) => {
@@ -72,6 +69,45 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
     [],
   );
 
+  // 줌 종료 시 레이어 재생성 (캐시 방지)
+  const rebuildLayer = useCallback(
+    (id) => {
+      const ref = rasterRefs.current[id];
+      const overlay = overlaysRef.current.find((o) => o.id === id);
+      if (!ref || !overlay || !overlay.visible) return;
+      const oldLayer = layerRefs.current[id];
+      if (oldLayer) mapRef.current.removeLayer(oldLayer);
+      const newLayer = buildRasterLayer(
+        ref.raster,
+        ref.GeoRasterLayer,
+        ref.transparentColor,
+        ref.tolerance ?? 30,
+      );
+      newLayer.setOpacity(overlay.opacity ?? 0.8);
+      newLayer.addTo(mapRef.current);
+      layerRefs.current[id] = newLayer;
+    },
+    [buildRasterLayer, mapRef],
+  );
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const onZoomEnd = () => {
+      Object.keys(rasterRefs.current).forEach((id) => rebuildLayer(id));
+    };
+    mapRef.current.on('zoomend', onZoomEnd);
+    return () => {
+      mapRef.current?.off('zoomend', onZoomEnd);
+    };
+  }, [rebuildLayer, mapRef]);
+
+  const loadFile = (file) => {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (['tif', 'tiff'].includes(ext)) loadGeoTIFF(file);
+    else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext))
+      setPlacing({ url: URL.createObjectURL(file), name: file.name });
+  };
+
   const loadGeoTIFF = async (file) => {
     setLoading('GeoTIFF 로딩 중...');
     try {
@@ -87,7 +123,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       });
       setLoading('GeoTIFF 렌더링 중...');
       const raster = await georaster(arrayBuffer);
-
       const isWebMercator = raster.projection === 3857 || raster.xmin > 1000 || raster.xmin < -1000;
       const sw = isWebMercator
         ? mercatorToLatLng(raster.xmin, raster.ymin)
@@ -95,12 +130,10 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       const ne = isWebMercator
         ? mercatorToLatLng(raster.xmax, raster.ymax)
         : [raster.ymax, raster.xmax];
-
       const id = genId();
       const layer = buildRasterLayer(raster, GeoRasterLayer);
       layer.addTo(mapRef.current);
       mapRef.current.fitBounds([sw, ne], { padding: [40, 40] });
-
       layerRefs.current[id] = layer;
       rasterRefs.current[id] = {
         raster,
@@ -109,7 +142,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
         transparentColor: null,
         tolerance: 30,
       };
-
       setOverlays((prev) => [
         ...prev,
         {
@@ -130,8 +162,8 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
 
   const placeImageOverlay = () => {
     const n = parseFloat(bounds.n),
-      s = parseFloat(bounds.s);
-    const e = parseFloat(bounds.e),
+      s = parseFloat(bounds.s),
+      e = parseFloat(bounds.e),
       w = parseFloat(bounds.w);
     if ([n, s, e, w].some(isNaN)) {
       alert('유효한 좌표를 입력하세요');
@@ -186,7 +218,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
     );
   };
 
-  // GeoTIFF는 레이어 재생성, 일반 이미지는 setOpacity
   const changeOpacity = (id, val) => {
     const ref = rasterRefs.current[id];
     if (ref) {
@@ -202,8 +233,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       newLayer.addTo(mapRef.current);
       layerRefs.current[id] = newLayer;
     } else {
-      const layer = layerRefs.current[id];
-      if (layer?.setOpacity) layer.setOpacity(val);
+      layerRefs.current[id]?.setOpacity?.(val);
     }
     setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, opacity: val } : o)));
   };
@@ -230,14 +260,14 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       const oldLayer = layerRefs.current[id];
       if (oldLayer) mapRef.current.removeLayer(oldLayer);
       const newLayer = buildRasterLayer(ref.raster, ref.GeoRasterLayer, color, tol);
-      const currentOpacity = overlays.find((o) => o.id === id)?.opacity ?? 0.8;
+      const currentOpacity = overlaysRef.current.find((o) => o.id === id)?.opacity ?? 0.8;
       newLayer.setOpacity(currentOpacity);
       newLayer.addTo(mapRef.current);
       layerRefs.current[id] = newLayer;
       rasterRefs.current[id] = { ...ref, transparentColor: color, tolerance: tol };
       setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, transparentColor: color } : o)));
     },
-    [buildRasterLayer, overlays, mapRef],
+    [buildRasterLayer, mapRef],
   );
 
   const startEyedropper = (id) => {
@@ -289,17 +319,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
       marginBottom: 6,
       fontWeight: 600,
     },
-    dropzone: (active) => ({
-      border: `1.5px dashed ${active ? 'var(--accent)' : 'var(--border)'}`,
-      borderRadius: 8,
-      padding: '12px 10px',
-      textAlign: 'center',
-      cursor: 'pointer',
-      background: active ? 'rgba(79,124,255,0.07)' : 'transparent',
-      transition: 'all 0.2s',
-      fontSize: 11,
-      color: 'var(--text2)',
-    }),
     inp: {
       width: '100%',
       background: 'var(--bg)',
@@ -326,38 +345,18 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
   return (
     <div style={{ marginTop: 4 }}>
       <div style={s.title}>이미지 오버레이</div>
-      <div style={{ position: 'relative', ...s.dropzone(dragging) }}>
-        <div style={{ pointerEvents: 'none' }}>
-          🛩️ 드론/항공사진 또는 GeoTIFF
-          <div style={{ fontSize: 10, marginTop: 3, color: 'var(--text3)' }}>
-            JPG · PNG · TIFF · GeoTIFF
-          </div>
-        </div>
+      <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 4 }}>
+        🛩️ 좌측 업로드 영역에서 JPG · PNG · GeoTIFF를 올리세요
         <input
           ref={fileRef}
           type="file"
           accept=".jpg,.jpeg,.png,.webp,.tif,.tiff"
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
-            opacity: 0,
-            cursor: 'pointer',
-          }}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragging(false);
-            const f = e.dataTransfer.files[0];
-            if (f) loadFile(f);
-          }}
+          style={{ display: 'none' }}
           onChange={(e) => {
-            if (e.target.files[0]) loadFile(e.target.files[0]);
+            if (e.target.files[0]) {
+              loadFile(e.target.files[0]);
+              e.target.value = '';
+            }
           }}
         />
       </div>
@@ -403,7 +402,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
           }}
         >
           <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>
-            📍 &quot;{placing.name}&quot; 위치 설정
+            📍 "{placing.name}" 위치 설정
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5, marginBottom: 6 }}>
             {[
@@ -511,7 +510,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
               </button>
             </div>
           </div>
-
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontSize: 10, color: 'var(--text2)' }}>투명도</span>
             <input
@@ -527,7 +525,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
               {Math.round(o.opacity * 100)}%
             </span>
           </div>
-
           {o.type === 'GeoTIFF' && o.transparentColor && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
               <span style={{ fontSize: 10, color: 'var(--text2)' }}>허용오차</span>
@@ -558,7 +555,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
               />
             </div>
           )}
-
           {eyedroppingId === o.id && (
             <div
               style={{
@@ -574,7 +570,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
           )}
         </div>
       ))}
-
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
     </div>
   );
@@ -595,7 +590,6 @@ const PALETTE = [
   '#86efac',
 ];
 
-// ── MapView ───────────────────────────────────────────────
 export default function MapView({
   rows,
   cols,
@@ -604,12 +598,12 @@ export default function MapView({
   onLayerChange,
   resetTrigger,
   colorCol,
+  imageHandlerRef,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const tileRef = useRef(null);
   const markersRef = useRef([]);
-  const overlayPanelRef = useRef({});
   const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
@@ -628,16 +622,6 @@ export default function MapView({
       attribution: '',
       maxZoom: 19,
     }).addTo(mapRef.current);
-    setTimeout(() => {
-      if (!overlayPanelRef.current) return;
-      Object.values(overlayPanelRef.current).forEach((layer) => {
-        try {
-          layer.bringToFront();
-        } catch {
-          /* empty */
-        }
-      });
-    }, 100);
   }, [layerType]);
 
   const colorMap = useMemo(() => {
@@ -652,9 +636,8 @@ export default function MapView({
 
   const getColor = useCallback(
     (row) => {
-      if (colorCol && row[colorCol] != null && row[colorCol] !== '') {
+      if (colorCol && row[colorCol] != null && row[colorCol] !== '')
         return colorMap[String(row[colorCol])] ?? CAT_COLORS.default;
-      }
       const cat = row.category ?? row.type ?? row.분류 ?? row.카테고리 ?? 'default';
       return CAT_COLORS[cat] ?? CAT_COLORS.default;
     },
@@ -666,14 +649,12 @@ export default function MapView({
     markersRef.current.forEach((mk) => mapRef.current.removeLayer(mk));
     markersRef.current = [];
     if (!cols.lat || !cols.lng || !rows.length) return;
-
     const bounds = [];
     rows.forEach((row) => {
-      const lat = parseFloat(row[cols.lat]);
-      const lng = parseFloat(row[cols.lng]);
+      const lat = parseFloat(row[cols.lat]),
+        lng = parseFloat(row[cols.lng]);
       if (isNaN(lat) || isNaN(lng)) return;
       const color = getColor(row);
-
       if (vizType === 'heatmap') {
         const c = L.circleMarker([lat, lng], {
           radius: 22,
@@ -683,7 +664,6 @@ export default function MapView({
         }).addTo(mapRef.current);
         markersRef.current.push(c);
       }
-
       const mk = L.circleMarker([lat, lng], {
         radius: vizType === 'cluster' ? 7 : 8,
         fillColor: color,
@@ -691,7 +671,6 @@ export default function MapView({
         weight: vizType === 'cluster' ? 0 : 1.5,
         fillOpacity: vizType === 'cluster' ? 0.65 : 0.9,
       });
-
       const entries = Object.entries(row)
         .filter(([k]) => !k.startsWith('_'))
         .slice(0, 7);
@@ -702,7 +681,6 @@ export default function MapView({
       markersRef.current.push(mk);
       bounds.push([lat, lng]);
     });
-
     if (bounds.length) mapRef.current.fitBounds(bounds, { padding: [40, 40] });
   }, [rows, cols, vizType, getColor]);
 
@@ -713,7 +691,6 @@ export default function MapView({
         ),
       ].slice(0, 12)
     : [...new Set(rows.map((r) => r.category ?? r.type ?? r.분류 ?? r.카테고리).filter(Boolean))];
-
   const getCatColor = (c) =>
     colorCol ? (colorMap[String(c)] ?? CAT_COLORS.default) : (CAT_COLORS[c] ?? CAT_COLORS.default);
 
@@ -821,7 +798,13 @@ export default function MapView({
             overflowY: 'auto',
           }}
         >
-          <ImageOverlayPanel mapRef={mapRef} resetTrigger={resetTrigger} />
+          <ImageOverlayPanel
+            mapRef={mapRef}
+            resetTrigger={resetTrigger}
+            onRegisterHandler={(fn) => {
+              if (imageHandlerRef) imageHandlerRef.current = fn;
+            }}
+          />
         </div>
       )}
     </div>
