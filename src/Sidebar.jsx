@@ -255,13 +255,6 @@ export default function Sidebar({
   const hasData = rows.length > 0;
   const fields = hasData ? Object.keys(rows[0]).filter((k) => !k.startsWith('_')) : [];
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f) onProcessFile(f);
-  };
-
   const loadSample = (key) => {
     const data = SAMPLE_SETS[key];
     setActiveSample(key);
@@ -360,15 +353,9 @@ export default function Sidebar({
 
         {!hasData ? (
           <>
-            <label
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragOver(true);
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={handleDrop}
+            <div
               style={{
-                display: 'block',
+                position: 'relative',
                 border: `1.5px dashed ${dragOver ? 'var(--accent)' : 'var(--border)'}`,
                 borderRadius: 12,
                 padding: '18px 14px',
@@ -380,41 +367,62 @@ export default function Sidebar({
                 transition: 'all 0.2s',
               }}
             >
-              <div style={{ fontSize: 24, marginBottom: 5 }}>📂</div>
-              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>
-                파일 드래그 또는 클릭
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
-                위경도·주소 컬럼 자동 인식 / GeoJSON 지원
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'center' }}>
-                {FILE_TYPES.map((t) => (
-                  <span
-                    key={t}
-                    style={{
-                      background: 'var(--bg3)',
-                      border: '1px solid var(--border)',
-                      color: 'var(--text2)',
-                      padding: '2px 6px',
-                      borderRadius: 4,
-                      fontSize: 10,
-                      fontFamily: 'monospace',
-                    }}
-                  >
-                    {t}
-                  </span>
-                ))}
+              <div style={{ pointerEvents: 'none' }}>
+                <div style={{ fontSize: 24, marginBottom: 5 }}>📂</div>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>
+                  파일 드래그 또는 클릭
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
+                  위경도·주소 컬럼 자동 인식 / GeoJSON 지원
+                </div>
+                <div
+                  style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'center' }}
+                >
+                  {FILE_TYPES.map((t) => (
+                    <span
+                      key={t}
+                      style={{
+                        background: 'var(--bg3)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--text2)',
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        fontSize: 10,
+                        fontFamily: 'monospace',
+                      }}
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
               </div>
               <input
                 ref={fileRef}
                 type="file"
                 accept=".csv,.tsv,.xlsx,.xls,.json,.geojson"
-                style={{ display: 'none' }}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  opacity: 0,
+                  cursor: 'pointer',
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  if (e.dataTransfer.files[0]) onProcessFile(e.dataTransfer.files[0]);
+                }}
                 onChange={(e) => {
                   if (e.target.files[0]) onProcessFile(e.target.files[0]);
                 }}
               />
-            </label>
+            </div>
 
             {error && (
               <div

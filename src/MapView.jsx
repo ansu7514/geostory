@@ -326,34 +326,41 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
   return (
     <div style={{ marginTop: 4 }}>
       <div style={s.title}>이미지 오버레이</div>
-      <label
-        style={{ display: 'block', ...s.dropzone(dragging) }}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragging(false);
-          const f = e.dataTransfer.files[0];
-          if (f) loadFile(f);
-        }}
-      >
-        🛩️ 드론/항공사진 또는 GeoTIFF
-        <div style={{ fontSize: 10, marginTop: 3, color: 'var(--text3)' }}>
-          JPG · PNG · TIFF · GeoTIFF
+      <div style={{ position: 'relative', ...s.dropzone(dragging) }}>
+        <div style={{ pointerEvents: 'none' }}>
+          🛩️ 드론/항공사진 또는 GeoTIFF
+          <div style={{ fontSize: 10, marginTop: 3, color: 'var(--text3)' }}>
+            JPG · PNG · TIFF · GeoTIFF
+          </div>
         </div>
         <input
           ref={fileRef}
           type="file"
           accept=".jpg,.jpeg,.png,.webp,.tif,.tiff"
-          style={{ display: 'none' }}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            opacity: 0,
+            cursor: 'pointer',
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            const f = e.dataTransfer.files[0];
+            if (f) loadFile(f);
+          }}
           onChange={(e) => {
             if (e.target.files[0]) loadFile(e.target.files[0]);
           }}
         />
-      </label>
+      </div>
 
       {loading && (
         <div
