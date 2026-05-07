@@ -48,9 +48,9 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
         georaster: raster,
         opacity: 1,
         resolution: 256,
-        updateWhenIdle: false,
-        updateWhenZooming: true,
-        keepBuffer: 4,
+        updateWhenIdle: true,
+        updateWhenZooming: false,
+        keepBuffer: 0,
         pixelValuesToColorFn: (values) => {
           if (!values || values.every((v) => v == null)) return null;
           const isMono = raster.numberOfRasters < 3;
