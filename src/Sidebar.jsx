@@ -360,8 +360,7 @@ export default function Sidebar({
 
         {!hasData ? (
           <>
-            <div
-              onClick={() => fileRef.current?.click()}
+            <label
               onDragOver={(e) => {
                 e.preventDefault();
                 setDragOver(true);
@@ -369,6 +368,7 @@ export default function Sidebar({
               onDragLeave={() => setDragOver(false)}
               onDrop={handleDrop}
               style={{
+                display: 'block',
                 border: `1.5px dashed ${dragOver ? 'var(--accent)' : 'var(--border)'}`,
                 borderRadius: 12,
                 padding: '18px 14px',
@@ -414,7 +414,7 @@ export default function Sidebar({
                   if (e.target.files[0]) onProcessFile(e.target.files[0]);
                 }}
               />
-            </div>
+            </label>
 
             {error && (
               <div

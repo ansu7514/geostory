@@ -326,8 +326,8 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
   return (
     <div style={{ marginTop: 4 }}>
       <div style={s.title}>이미지 오버레이</div>
-      <div
-        style={s.dropzone(dragging)}
+      <label
+        style={{ display: 'block', ...s.dropzone(dragging) }}
         onDragOver={(e) => {
           e.preventDefault();
           setDragging(true);
@@ -339,7 +339,6 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
           const f = e.dataTransfer.files[0];
           if (f) loadFile(f);
         }}
-        onClick={() => fileRef.current?.click()}
       >
         🛩️ 드론/항공사진 또는 GeoTIFF
         <div style={{ fontSize: 10, marginTop: 3, color: 'var(--text3)' }}>
@@ -354,7 +353,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger }) {
             if (e.target.files[0]) loadFile(e.target.files[0]);
           }}
         />
-      </div>
+      </label>
 
       {loading && (
         <div
