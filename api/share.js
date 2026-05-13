@@ -1,7 +1,6 @@
-// api/share.js
-import { put, list } from '@vercel/blob';
+// api/share.js — Vercel Serverless Function (CommonJS)
+const { put, list } = require('@vercel/blob');
 
-// Vercel은 body를 자동 파싱 안 함 — 직접 읽기
 async function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -12,20 +11,19 @@ async function readBody(req) {
       try {
         resolve(JSON.parse(data));
       } catch (e) {
-        reject(new Error('Invalid JSON body'));
+        reject(new Error('Invalid JSON'));
       }
     });
     req.on('error', reject);
   });
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // POST — 데이터 저장
   if (req.method === 'POST') {
     try {
       const body = await readBody(req);
@@ -41,12 +39,10 @@ export default async function handler(req, res) {
     }
   }
 
-  // GET — 데이터 조회
   if (req.method === 'GET') {
     const { id } = req.query;
     if (!id) return res.status(400).json({ error: 'id required' });
     try {
-      // list로 파일 찾기
       const { blobs } = await list({ prefix: `shares/${id}.json` });
       if (!blobs.length) return res.status(404).json({ error: 'Not found' });
       const text = await fetch(blobs[0].url).then((r) => r.text());
@@ -57,4 +53,4 @@ export default async function handler(req, res) {
   }
 
   return res.status(405).json({ error: 'Method not allowed' });
-}
+};
