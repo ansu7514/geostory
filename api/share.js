@@ -1,5 +1,5 @@
 // api/share.js — Vercel Serverless Function (CommonJS)
-const { put, list } = require('@vercel/blob');
+const { put, list, getDownloadUrl } = require('@vercel/blob');
 
 async function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -28,12 +28,12 @@ module.exports = async function handler(req, res) {
     try {
       const body = await readBody(req);
       const id = Math.random().toString(36).substr(2, 10) + Date.now().toString(36);
-      const blob = await put(`shares/${id}.json`, JSON.stringify(body), {
-        access: 'public',
+      await put(`shares/${id}.json`, JSON.stringify(body), {
+        access: 'private',
         contentType: 'application/json',
         addRandomSuffix: false,
       });
-      return res.status(200).json({ id, url: blob.url });
+      return res.status(200).json({ id });
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
@@ -45,7 +45,11 @@ module.exports = async function handler(req, res) {
     try {
       const { blobs } = await list({ prefix: `shares/${id}.json` });
       if (!blobs.length) return res.status(404).json({ error: 'Not found' });
-      const text = await fetch(blobs[0].url).then((r) => r.text());
+      // private blob은 서버에서 직접 fetch
+      const token = process.env.BLOB_READ_WRITE_TOKEN;
+      const text = await fetch(blobs[0].url, {
+        headers: { Authorization: `Bearer ${token}` },
+      }).then((r) => r.text());
       return res.status(200).json(JSON.parse(text));
     } catch (e) {
       return res.status(500).json({ error: e.message });
