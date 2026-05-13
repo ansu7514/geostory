@@ -246,6 +246,10 @@ export default function Sidebar({
   error,
   colorCol,
   onColorColChange,
+  shareUrl,
+  shareError,
+  sharing,
+  onShare,
 }) {
   const fileRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
@@ -313,7 +317,7 @@ export default function Sidebar({
         await new Promise((r) => setTimeout(r, 700));
         setInsights({ ...analyzeLocally(rows, cols), source: 'local' });
       }
-      setShareId(Math.random().toString(36).substr(2, 8));
+      setShareId(true);
     } catch (e) {
       setAiError(e.message);
       setInsights({ ...analyzeLocally(rows, cols), source: 'local' });
@@ -322,7 +326,7 @@ export default function Sidebar({
   };
 
   const copyLink = () => {
-    navigator.clipboard.writeText(`https://geostory-mu.vercel.app/view/${shareId}`).catch(() => {});
+    navigator.clipboard.writeText(shareUrl || 'https://geostory-sph.vercel.app').catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -955,42 +959,75 @@ export default function Sidebar({
           alignItems: 'center',
         }}
       >
-        {shareId ? (
-          <>
-            <div
-              style={{
-                flex: 1,
-                background: 'var(--bg3)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                padding: '6px 10px',
-                fontSize: 11,
-                color: 'var(--text2)',
-                fontFamily: 'monospace',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              geostory-mu.vercel.app/view/{shareId}
+        {hasData ? (
+          <div style={{ width: '100%' }}>
+            {shareError && (
+              <div
+                style={{
+                  fontSize: 10,
+                  color: 'var(--danger)',
+                  marginBottom: 6,
+                  padding: '5px 8px',
+                  background: 'rgba(248,113,113,0.1)',
+                  border: '1px solid rgba(248,113,113,0.2)',
+                  borderRadius: 5,
+                }}
+              >
+                ⚠ {shareError}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
+              {shareUrl ? (
+                <>
+                  <div
+                    style={{
+                      flex: 1,
+                      background: 'var(--bg3)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      padding: '6px 10px',
+                      fontSize: 10,
+                      color: 'var(--accent)',
+                      fontFamily: 'monospace',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {shareUrl.replace('https://', '')}
+                  </div>
+                  <button
+                    onClick={copyLink}
+                    style={{ ...s.btn(true), fontSize: 11, padding: '6px 11px' }}
+                  >
+                    {copied ? '✓ 복사됨' : '복사'}
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    style={{ ...s.btn(false), fontSize: 11, padding: '6px 11px' }}
+                  >
+                    초기화
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={onShare}
+                    disabled={sharing}
+                    style={{ ...s.btn(true), fontSize: 12, flex: 1, opacity: sharing ? 0.7 : 1 }}
+                  >
+                    {sharing ? '생성 중...' : '🔗 공유 링크 생성'}
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    style={{ ...s.btn(false), fontSize: 12, padding: '7px 12px' }}
+                  >
+                    초기화
+                  </button>
+                </>
+              )}
             </div>
-            <button
-              onClick={copyLink}
-              style={{ ...s.btn(true), fontSize: 11, padding: '6px 11px' }}
-            >
-              {copied ? '✓' : '복사'}
-            </button>
-            <button
-              onClick={handleReset}
-              style={{ ...s.btn(false), fontSize: 11, padding: '6px 11px' }}
-            >
-              초기화
-            </button>
-          </>
-        ) : hasData ? (
-          <button onClick={handleReset} style={{ ...s.btn(false), fontSize: 12, width: '100%' }}>
-            초기화
-          </button>
+          </div>
         ) : null}
       </div>
 

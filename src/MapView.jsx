@@ -4,7 +4,6 @@ import { CAT_COLORS, TILE_LAYERS, mercatorToLatLng, latLngToMercator, genId } fr
 
 function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
   const [overlays, setOverlays] = useState([]);
-  const [dragging, setDragging] = useState(false);
   const [placing, setPlacing] = useState(null);
   const [loading, setLoading] = useState(null);
   const [bounds, setBounds] = useState({ n: '', s: '', e: '', w: '' });
@@ -12,14 +11,12 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
   const [tolerance, setTolerance] = useState(30);
   const fileRef = useRef(null);
   const layerRefs = useRef({});
-  const rasterRefs = useRef({});
+  const rasterRefs = useRef({}); // { raster, GeoRasterLayer, isWebMercator, colorFilter: {r,g,b}|null, tol }
   const overlaysRef = useRef([]);
 
   useEffect(() => {
     overlaysRef.current = overlays;
   }, [overlays]);
-
-  // 부모에 파일 처리 함수 등록
   useEffect(() => {
     onRegisterHandler?.(loadFile);
   }, []);
@@ -39,67 +36,47 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
     setEyedroppingId(null);
   }, [resetTrigger, mapRef]);
 
-  const buildRasterLayer = useCallback(
-    (raster, GeoRasterLayer, transparentColor = null, tol = 30) => {
-      return new GeoRasterLayer({
-        georaster: raster,
-        opacity: 1,
-        resolution: 256,
-        updateWhenIdle: true,
-        updateWhenZooming: false,
-        keepBuffer: 0,
-        pixelValuesToColorFn: (values) => {
-          if (!values || values.every((v) => v == null)) return null;
-          const isMono = raster.numberOfRasters < 3;
-          const r = Math.round(values[0] ?? 0);
-          const g = Math.round(isMono ? values[0] : (values[1] ?? 0));
-          const b = Math.round(isMono ? values[0] : (values[2] ?? 0));
-          if (transparentColor) {
-            const diff =
-              Math.abs(r - transparentColor.r) +
-              Math.abs(g - transparentColor.g) +
-              Math.abs(b - transparentColor.b);
-            if (diff < tol * 3) return null;
-          }
-          const a = raster.numberOfRasters >= 4 ? (values[3] ?? 255) : 255;
-          return `rgba(${r},${g},${b},${a / 255})`;
-        },
-      });
-    },
-    [],
-  );
+  // ── 핵심: colorFilter를 rasterRefs에 저장하고 렌더링 시 직접 참조 ──
+  const makeLayer = (id) => {
+    const ref = rasterRefs.current[id];
+    if (!ref) return null;
+    const { raster, GeoRasterLayer } = ref;
+    const layer = new GeoRasterLayer({
+      georaster: raster,
+      opacity: 1,
+      resolution: 256,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
+      keepBuffer: 0,
+      pixelValuesToColorFn: (values) => {
+        if (!values || values.every((v) => v == null)) return null;
+        const isMono = raster.numberOfRasters < 3;
+        const r = Math.round(values[0] ?? 0);
+        const g = Math.round(isMono ? values[0] : (values[1] ?? 0));
+        const b = Math.round(isMono ? values[0] : (values[2] ?? 0));
+        // 매 타일 렌더링마다 rasterRefs에서 최신 colorFilter 직접 참조
+        const cf = rasterRefs.current[id]?.colorFilter;
+        const tol = rasterRefs.current[id]?.tol ?? 30;
+        if (cf) {
+          const diff = Math.abs(r - cf.r) + Math.abs(g - cf.g) + Math.abs(b - cf.b);
+          if (diff < tol * 3) return null;
+        }
+        const a = raster.numberOfRasters >= 4 ? (values[3] ?? 255) : 255;
+        return `rgba(${r},${g},${b},${a / 255})`;
+      },
+    });
+    return layer;
+  };
 
-  // 줌 종료 시 레이어 재생성 (캐시 방지)
-  const rebuildLayer = useCallback(
-    (id) => {
-      const ref = rasterRefs.current[id];
-      const overlay = overlaysRef.current.find((o) => o.id === id);
-      if (!ref || !overlay || !overlay.visible) return;
-      const oldLayer = layerRefs.current[id];
-      if (oldLayer) mapRef.current.removeLayer(oldLayer);
-      const newLayer = buildRasterLayer(
-        ref.raster,
-        ref.GeoRasterLayer,
-        ref.transparentColor,
-        ref.tolerance ?? 30,
-      );
-      newLayer.setOpacity(overlay.opacity ?? 0.8);
-      newLayer.addTo(mapRef.current);
-      layerRefs.current[id] = newLayer;
-    },
-    [buildRasterLayer, mapRef],
-  );
-
-  useEffect(() => {
-    if (!mapRef.current) return;
-    const onZoomEnd = () => {
-      Object.keys(rasterRefs.current).forEach((id) => rebuildLayer(id));
-    };
-    mapRef.current.on('zoomend', onZoomEnd);
-    return () => {
-      mapRef.current?.off('zoomend', onZoomEnd);
-    };
-  }, [rebuildLayer, mapRef]);
+  const replaceLayer = (id, opacity) => {
+    const oldLayer = layerRefs.current[id];
+    if (oldLayer) mapRef.current.removeLayer(oldLayer);
+    const newLayer = makeLayer(id);
+    if (!newLayer) return;
+    newLayer.setOpacity(opacity ?? overlaysRef.current.find((o) => o.id === id)?.opacity ?? 0.8);
+    newLayer.addTo(mapRef.current);
+    layerRefs.current[id] = newLayer;
+  };
 
   const loadFile = (file) => {
     const ext = file.name.split('.').pop().toLowerCase();
@@ -131,27 +108,20 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
         ? mercatorToLatLng(raster.xmax, raster.ymax)
         : [raster.ymax, raster.xmax];
       const id = genId();
-      const layer = buildRasterLayer(raster, GeoRasterLayer);
-      layer.addTo(mapRef.current);
-      mapRef.current.fitBounds([sw, ne], { padding: [40, 40] });
-      layerRefs.current[id] = layer;
       rasterRefs.current[id] = {
         raster,
         GeoRasterLayer,
         isWebMercator,
-        transparentColor: null,
-        tolerance: 30,
+        colorFilter: null,
+        tol: 30,
       };
+      const layer = makeLayer(id);
+      layer.addTo(mapRef.current);
+      mapRef.current.fitBounds([sw, ne], { padding: [40, 40] });
+      layerRefs.current[id] = layer;
       setOverlays((prev) => [
         ...prev,
-        {
-          id,
-          name: file.name,
-          type: 'GeoTIFF',
-          visible: true,
-          opacity: 0.8,
-          transparentColor: null,
-        },
+        { id, name: file.name, type: 'GeoTIFF', visible: true, opacity: 0.8, colorFilter: null },
       ]);
     } catch (e) {
       alert('GeoTIFF 로드 오류: ' + e.message);
@@ -221,17 +191,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
   const changeOpacity = (id, val) => {
     const ref = rasterRefs.current[id];
     if (ref) {
-      const oldLayer = layerRefs.current[id];
-      if (oldLayer) mapRef.current.removeLayer(oldLayer);
-      const newLayer = buildRasterLayer(
-        ref.raster,
-        ref.GeoRasterLayer,
-        ref.transparentColor,
-        ref.tolerance ?? 30,
-      );
-      newLayer.setOpacity(val);
-      newLayer.addTo(mapRef.current);
-      layerRefs.current[id] = newLayer;
+      replaceLayer(id, val);
     } else {
       layerRefs.current[id]?.setOpacity?.(val);
     }
@@ -253,22 +213,13 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
     setOverlays((prev) => prev.filter((o) => o.id !== id));
   };
 
-  const applyTransparentColor = useCallback(
-    (id, color, tol) => {
-      const ref = rasterRefs.current[id];
-      if (!ref) return;
-      const oldLayer = layerRefs.current[id];
-      if (oldLayer) mapRef.current.removeLayer(oldLayer);
-      const newLayer = buildRasterLayer(ref.raster, ref.GeoRasterLayer, color, tol);
-      const currentOpacity = overlaysRef.current.find((o) => o.id === id)?.opacity ?? 0.8;
-      newLayer.setOpacity(currentOpacity);
-      newLayer.addTo(mapRef.current);
-      layerRefs.current[id] = newLayer;
-      rasterRefs.current[id] = { ...ref, transparentColor: color, tolerance: tol };
-      setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, transparentColor: color } : o)));
-    },
-    [buildRasterLayer, mapRef],
-  );
+  const applyColorFilter = (id, color, tol) => {
+    if (!rasterRefs.current[id]) return;
+    // rasterRefs 먼저 업데이트 → 이후 makeLayer가 최신값 참조
+    rasterRefs.current[id] = { ...rasterRefs.current[id], colorFilter: color, tol };
+    replaceLayer(id);
+    setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, colorFilter: color } : o)));
+  };
 
   const startEyedropper = (id) => {
     setEyedroppingId(id);
@@ -298,7 +249,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
         g: Math.round(isMono ? values[0] : (values[1] ?? 0)),
         b: Math.round(isMono ? values[0] : (values[2] ?? 0)),
       };
-      applyTransparentColor(id, color, tolerance);
+      applyColorFilter(id, color, tolerance);
       setEyedroppingId(null);
       mapRef.current.getContainer().style.cursor = '';
     });
@@ -525,7 +476,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
               {Math.round(o.opacity * 100)}%
             </span>
           </div>
-          {o.type === 'GeoTIFF' && o.transparentColor && (
+          {o.type === 'GeoTIFF' && o.colorFilter && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
               <span style={{ fontSize: 10, color: 'var(--text2)' }}>허용오차</span>
               <input
@@ -537,20 +488,20 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
                 onChange={(e) => {
                   const val = parseInt(e.target.value);
                   setTolerance(val);
-                  applyTransparentColor(o.id, o.transparentColor, val);
+                  applyColorFilter(o.id, o.colorFilter, val);
                 }}
                 style={{ flex: 1, accentColor: 'var(--warn)' }}
               />
               <span style={{ fontSize: 10, color: 'var(--text2)', width: 22 }}>{tolerance}</span>
               <div
-                title={`rgb(${o.transparentColor.r},${o.transparentColor.g},${o.transparentColor.b})`}
+                title={`rgb(${o.colorFilter.r},${o.colorFilter.g},${o.colorFilter.b})`}
                 style={{
                   width: 14,
                   height: 14,
                   borderRadius: 3,
                   border: '1px solid var(--border)',
                   flexShrink: 0,
-                  background: `rgb(${o.transparentColor.r},${o.transparentColor.g},${o.transparentColor.b})`,
+                  background: `rgb(${o.colorFilter.r},${o.colorFilter.g},${o.colorFilter.b})`,
                 }}
               />
             </div>
@@ -570,7 +521,7 @@ function ImageOverlayPanel({ mapRef, resetTrigger, onRegisterHandler }) {
           )}
         </div>
       ))}
-      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+      <style>{'@keyframes spin { to { transform: rotate(360deg) } }'}</style>
     </div>
   );
 }
@@ -697,7 +648,6 @@ export default function MapView({
   return (
     <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column' }}>
       <div ref={containerRef} style={{ width: '100%', flex: 1 }} />
-
       <div
         style={{
           position: 'absolute',
@@ -728,7 +678,6 @@ export default function MapView({
           </button>
         ))}
       </div>
-
       {cats.length >= 2 && (
         <div
           style={{
@@ -780,7 +729,6 @@ export default function MapView({
           ))}
         </div>
       )}
-
       {mapReady && (
         <div
           style={{
